@@ -186,28 +186,30 @@ class Classifier(object):
         Returns:
           loss: Loss tensor of type float.
         """
-        with tf.name_scope('loss'):
-            logits = tf.reshape(logits, (-1, 2))
-            epsilon = tf.constant(value=1e-4)
-            # logits = logits
-            labels = tf.stack([labels, labels])
-            labels = tf.to_float(tf.reshape(labels, (-1, 2)))
+        with self.graph.as_default():
+            with self.graph.device("/gpu:0"):
+                with tf.name_scope('loss'):
+                    logits = tf.reshape(logits, (-1, 2))
+                    epsilon = tf.constant(value=1e-4)
+                    # logits = logits
+                    labels = tf.stack([labels, labels])
+                    labels = tf.to_float(tf.reshape(labels, (-1, 2)))
 
-            softmax = tf.nn.softmax(logits) + epsilon
+                    softmax = tf.nn.softmax(logits) + epsilon
 
-            if weights is not None:
-                cross_entropy = -tf.reduce_sum(tf.multiply(labels * tf.log(softmax),
-                                                           weights), reduction_indices=[1])
-            else:
-                cross_entropy = -tf.reduce_sum(
-                    labels * tf.log(softmax), reduction_indices=[1])
+                    if weights is not None:
+                        cross_entropy = -tf.reduce_sum(tf.multiply(labels * tf.log(softmax),
+                                                                   weights), reduction_indices=[1])
+                    else:
+                        cross_entropy = -tf.reduce_sum(
+                            labels * tf.log(softmax), reduction_indices=[1])
 
-            cross_entropy_mean = tf.reduce_mean(cross_entropy,
-                                                name='xentropy_mean')
-            tf.add_to_collection('losses', cross_entropy_mean)
+                    cross_entropy_mean = tf.reduce_mean(cross_entropy,
+                                                        name='xentropy_mean')
+                    tf.add_to_collection('losses', cross_entropy_mean)
 
-            return tf.add_n(tf.get_collection('losses'), name='total_loss')
-        # return loss
+                    return tf.add_n(tf.get_collection('losses'), name='total_loss')
+                # return loss
 
     def make_train_op(self, loss, rate, epsilon):
         with self.graph.as_default():
@@ -217,14 +219,19 @@ class Classifier(object):
                 self.session.run(tf.global_variables_initializer())
                 return op
 
-    def train(self, images, labels, epochs=5, batch_size=10, rate=0.01, epsilon=0.1):
+    def train(self, images, labels, epochs=5, batch_size=10, rate=0.5, epsilon=0.01, weights=None):
         print("Training")
         self.reset()
         batch_count = int(len(images) / batch_size)
-        train_op = self.make_train_op(self.loss, rate, epsilon)
+
+        # loss = self.calculate_loss(self.logits, self.target_labels, weights)
+        loss = self.loss
+        train_op = self.make_train_op(loss, rate, epsilon)
 
         for epoch in range(epochs):
+            print("===============")
             print("EPOCH", epoch)
+            print("===============")
             for i in range(batch_count):
                 print("Batch", i)
                 frames = range(i * batch_size, (i + 1) * batch_size)
