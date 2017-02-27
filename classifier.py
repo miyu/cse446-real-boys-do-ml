@@ -17,8 +17,12 @@ TEST_LAB = np.load(LABELS)[90:]
 
 class Classifier(object):
     def __init__(self, width=640, height=480, depth=3):
+        self.config = tf.ConfigProto(
+                                      allow_soft_placement=True,
+                                      log_device_placement=True
+                                  )
         self.graph = tf.Graph()
-        self.session = tf.Session(graph=self.graph)  # , config=tf.ConfigProto(log_device_placement=True)
+        self.session = tf.Session(graph=self.graph, config=self.config)
 
         self.height = height
         self.width = width
@@ -27,13 +31,16 @@ class Classifier(object):
         with self.graph.as_default():
             with self.graph.device("/gpu:0"):
                 self.images = tf.placeholder(tf.float32, [None, height, width, depth], "images")
-                self.target_labels = tf.placeholder(tf.float32, [None, height, width], "target_labels")
+                self.target_labels = tf.placeholder(tf.bool, [None, height, width], "target_labels")
 
                 self.pred_labels, self.logits = self.build_model(self.images)
                 self.loss = self.calculate_loss(self.logits, self.target_labels, [1, 1])
 
+            # with self.graph.device("/cpu:0"):
+                self.summary = tf.summary.merge_all()
+
     def reset(self):
-        self.session = tf.Session(graph=self.graph)
+        self.session = tf.Session(graph=self.graph, config=self.config)
 
     def build_model(self, images):
         """Model function for CNN."""
@@ -189,27 +196,46 @@ class Classifier(object):
         with self.graph.as_default():
             with self.graph.device("/gpu:0"):
                 with tf.name_scope('loss'):
+                    cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=tf.to_int32(labels))
+                    cross_entropy_mean = tf.reduce_mean(cross_entropy, name='x_entropy_mean')
+                    tf.summary.scalar('x_entropy_mean', cross_entropy_mean)
+                    return cross_entropy_mean
+
                     logits = tf.reshape(logits, (-1, 2))
                     epsilon = tf.constant(value=1e-4)
-                    # logits = logits
-                    labels = tf.stack([labels, labels])
-                    labels = tf.to_float(tf.reshape(labels, (-1, 2)))
+
+                    inverse = tf.equal(labels, tf.zeros_like(labels, dtype=tf.bool))
+                    # with self.graph.device("/cpu:0"):
+                    labels = tf.stack([labels, inverse], axis=-1)
+                    labels = tf.to_float(labels)
+                    labels = tf.reshape(labels, (-1, 2))
 
                     softmax = tf.nn.softmax(logits) + epsilon
 
                     if weights is not None:
+                        print(weights)
                         cross_entropy = -tf.reduce_sum(tf.multiply(labels * tf.log(softmax),
                                                                    weights), reduction_indices=[1])
                     else:
                         cross_entropy = -tf.reduce_sum(
                             labels * tf.log(softmax), reduction_indices=[1])
 
-                    cross_entropy_mean = tf.reduce_mean(cross_entropy,
-                                                        name='xentropy_mean')
+                    cross_entropy_mean = tf.reduce_mean(cross_entropy, name='x_entropy_mean')
                     tf.add_to_collection('losses', cross_entropy_mean)
-
-                    return tf.add_n(tf.get_collection('losses'), name='total_loss')
+                    # with self.graph.device("/cpu:0"):
+                    tf.summary.scalar('x_entropy_mean', cross_entropy_mean)
+                    return cross_entropy_mean
+                    # return tf.add_n(tf.get_collection('losses'), name='total_loss')
                 # return loss
+    def asdf(self, labels):
+        with self.graph.as_default():
+            with self.graph.device("/gpu:0"):
+                lbl = tf.Variable([False, False, False])
+                # tf.expand_dims(lbl, -1)
+                inverse = tf.equal(lbl, tf.zeros_like(lbl, dtype=tf.bool))
+                with self.graph.device("/cpu:0"):
+                    stacked = tf.stack([lbl, inverse], axis=-1)
+        return self.session.run(stacked, feed_dict={lbl: labels})
 
     def make_train_op(self, loss, rate, epsilon):
         with self.graph.as_default():
@@ -224,24 +250,32 @@ class Classifier(object):
         self.reset()
         batch_count = int(len(images) / batch_size)
 
-        # loss = self.calculate_loss(self.logits, self.target_labels, weights)
-        loss = self.loss
+        loss = self.calculate_loss(self.logits, self.target_labels, weights)
+        # loss = self.loss
         train_op = self.make_train_op(loss, rate, epsilon)
+
+        writer = tf.summary.FileWriter("train/", self.graph)
 
         for epoch in range(epochs):
             print("===============")
             print("EPOCH", epoch)
             print("===============")
             for i in range(batch_count):
-                print("Batch", i)
+                print("batch", i)
                 frames = range(i * batch_size, (i + 1) * batch_size)
-                self.session.run(train_op,
+                # _, losses = self.session.run([train_op, tf.get_collection('losses')],
+                # print(train_op is None, self.summary is None)
+                summary, _ = self.session.run([self.summary, train_op],
                                  {self.images: images[frames], self.target_labels: labels[frames]})
+                writer.add_summary(summary, i)
             if len(images) % batch_size != 0:
                 print("Batch", batch_count)
                 frames = range(batch_count * batch_size, len(images))
-                self.session.run(train_op,
+                summary, _ = self.session.run([self.summary, train_op],
                                  {self.images: images[frames], self.target_labels: labels[frames]})
+                writer.add_summary(summary, batch_count)
+        writer.close()
+        return self.session.run(tf.get_collection('losses'))
 
         # with tf.Session() as session:
         #     with tf.Graph().as_default():
@@ -271,7 +305,7 @@ class Classifier(object):
 m = Classifier()
 
 def train(images=TRAIN_IMG, labels=TRAIN_LAB, *args, **kwargs):
-    m.train(images, labels, *args, **kwargs)
+    return m.train(images, labels, *args, **kwargs)
 
 def test(images=TEST_IMG, labels=TEST_LAB, *args, **kwargs):
     return m.test(images, labels, *args, **kwargs)
