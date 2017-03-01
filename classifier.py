@@ -1,26 +1,33 @@
+import os
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 
-FILE_PREFIX = "hands/hands1-3650"
-IMAGES = FILE_PREFIX + "-images-reduced.npy"
-LABELS = FILE_PREFIX + "-labels-reduced.npy"
+FILE_PREFIX = "data/hands1-3650"
+IMAGES = FILE_PREFIX + "-images-500.npy"
+LABELS = FILE_PREFIX + "-labels-500.npy"
 
 IMAGES_FULL = FILE_PREFIX + "-images.npy"
 LABELS_FULL = FILE_PREFIX + "-labels.npy"
 
-TRAIN_IMG = np.load(IMAGES)[0:90]
-TRAIN_LAB = np.load(LABELS)[0:90]
-TEST_IMG = np.load(IMAGES)[90:]
-TEST_LAB = np.load(LABELS)[90:]
+IMG = np.load(IMAGES)
+LAB = np.load(LABELS)
+TRAIN_IMG = IMG[:400]
+TRAIN_LAB = LAB[:400]
+TEST_IMG = IMG[400:]
+TEST_LAB = LAB[400:]
 
+
+i = 0
+while True:
+    i += 1
+    summary_path = "train/run{0}/".format(i)
+    if not os.path.exists(summary_path):
+        break
 
 class Classifier(object):
     def __init__(self, width=640, height=480, depth=3):
-        self.config = tf.ConfigProto(
-                                      allow_soft_placement=True,
-                                      log_device_placement=True
-                                  )
+        self.config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
         self.graph = tf.Graph()
         self.session = tf.Session(graph=self.graph, config=self.config)
 
@@ -44,6 +51,9 @@ class Classifier(object):
 
     def build_model(self, images):
         """Model function for CNN."""
+
+        images = tf.subtract(tf.divide(images, 255 / 2), 1)
+
         # Input Layer
         input_layer = tf.reshape(images, [-1, self.height, self.width, self.depth])
 
@@ -52,7 +62,7 @@ class Classifier(object):
             inputs=input_layer,
             filters=32,
             kernel_size=[5, 5],
-            strides=2,
+            strides=1,
             padding="same",
             activation=tf.nn.relu)
         pool1 = tf.layers.max_pooling2d(inputs=conv1, pool_size=[2, 2], strides=2)
@@ -62,7 +72,7 @@ class Classifier(object):
             inputs=pool1,
             filters=32,
             kernel_size=[5, 5],
-            strides=2,
+            strides=1,
             padding="same",
             activation=tf.nn.relu)
         pool2 = tf.layers.max_pooling2d(inputs=conv2, pool_size=[2, 2], strides=2)
@@ -108,12 +118,12 @@ class Classifier(object):
             padding="same",
             activation=tf.nn.relu)
 
-        deconv_size = 2**4
+        # deconv_size = 2**4
         deconv = tf.layers.conv2d_transpose(
             inputs=small_conv2,
-            filters=2,
-            kernel_size=[deconv_size, deconv_size],
-            strides=deconv_size,
+            filters=1,
+            kernel_size=[16, 16],
+            strides=4,
             padding="same",
             activation=None)
 
@@ -139,11 +149,13 @@ class Classifier(object):
         # print(small_conv2.shape)
         # print(deconv.shape)
 
-        # labels = tf.argmax(deconv, dimension=3)
-        first, second = tf.unstack(deconv, axis=3)
-        labels = tf.greater(first, second)  # first is True, second is False
+        # first, second = tf.unstack(deconv, axis=3)
+        # labels = tf.greater(first, second)  # first is True, second is False
 
-        return labels, deconv
+        logits = tf.squeeze(deconv, axis=3)
+        labels = tf.greater(logits, 0)
+
+        return labels, logits
 
         # # Dense Layer
         # pool2_flat = tf.reshape(pool2, [-1, 7 * 7 * 64])
@@ -196,7 +208,9 @@ class Classifier(object):
         with self.graph.as_default():
             with self.graph.device("/gpu:0"):
                 with tf.name_scope('loss'):
-                    cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=tf.to_int32(labels))
+                    # cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=tf.to_int32(labels))
+                    
+                    cross_entropy = tf.nn.weighted_cross_entropy_with_logits(logits=logits, targets=tf.to_float(labels), pos_weight=10)
                     cross_entropy_mean = tf.reduce_mean(cross_entropy, name='x_entropy_mean')
                     tf.summary.scalar('x_entropy_mean', cross_entropy_mean)
                     return cross_entropy_mean
@@ -245,7 +259,7 @@ class Classifier(object):
                 self.session.run(tf.global_variables_initializer())
                 return op
 
-    def train(self, images, labels, epochs=5, batch_size=10, rate=0.5, epsilon=0.01, weights=None):
+    def train(self, images, labels, epochs=1, batch_size=1, rate=0.0001, epsilon=1e-8, weights=None):
         print("Training")
         self.reset()
         batch_count = int(len(images) / batch_size)
@@ -254,7 +268,7 @@ class Classifier(object):
         # loss = self.loss
         train_op = self.make_train_op(loss, rate, epsilon)
 
-        writer = tf.summary.FileWriter("train/", self.graph)
+        writer = tf.summary.FileWriter(summary_path, self.graph)
 
         for epoch in range(epochs):
             print("===============")
@@ -266,40 +280,25 @@ class Classifier(object):
                 # _, losses = self.session.run([train_op, tf.get_collection('losses')],
                 # print(train_op is None, self.summary is None)
                 summary, _ = self.session.run([self.summary, train_op],
-                                 {self.images: images[frames], self.target_labels: labels[frames]})
+                                              {self.images: images[frames], self.target_labels: labels[frames]})
                 writer.add_summary(summary, i)
             if len(images) % batch_size != 0:
                 print("Batch", batch_count)
                 frames = range(batch_count * batch_size, len(images))
                 summary, _ = self.session.run([self.summary, train_op],
-                                 {self.images: images[frames], self.target_labels: labels[frames]})
+                                              {self.images: images[frames], self.target_labels: labels[frames]})
                 writer.add_summary(summary, batch_count)
         writer.close()
         return self.session.run(tf.get_collection('losses'))
 
-        # with tf.Session() as session:
-        #     with tf.Graph().as_default():
-        #         step = tf.contrib.framework.get_or_create_global_step()
-        #
-        #         images = np.load(FILES + "-images-reduced.npy")
-        #         labels = np.load(FILES + "-labels-reduced.npy")
-        #
-        #         logits = self.build_model(batch_images, batch_labels)
-        #         session.run(tf.initialize_all_variables())
-        #
-        #         for batch_images, batch_labels in batches:
-        #
-        #             loss = self.calculate_loss(logits, batch_labels, 2)
-        #
-        #             train_op = self.make_train_op(loss, step)
-        #
-        #             session.run(train_op)
-
     def test(self, images, labels):
         print("Testing")
-        pred = self.session.run(self.pred_labels,
-                         {self.images: images, self.target_labels: labels})
-        print("Errors:", (pred != labels).sum())
+        pred = np.empty_like(labels)
+        for i in range(len(images)):
+            pred[i] = self.session.run(self.pred_labels,
+                                {self.images: images[i:i+1], self.target_labels: labels[i:i+1]})[0]
+        print("Avg Errors:", (pred != labels).sum() / len(labels))
+        print("Pct Errors:", (pred != labels).sum() / labels.size)
         return pred
 
 m = Classifier()
