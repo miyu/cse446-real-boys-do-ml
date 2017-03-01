@@ -1,7 +1,10 @@
 import os
+import random
+
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
+import misc
 
 FILE_PREFIX = "data/hands1-3650"
 IMAGES = FILE_PREFIX + "-images-500.npy"
@@ -52,6 +55,8 @@ class Classifier(object):
     def build_model(self, images):
         """Model function for CNN."""
 
+        regularization_scale = 1.
+
         images = tf.subtract(tf.divide(images, 255 / 2), 1)
 
         # Input Layer
@@ -61,70 +66,84 @@ class Classifier(object):
         conv1 = tf.layers.conv2d(
             inputs=input_layer,
             filters=32,
-            kernel_size=[5, 5],
-            strides=1,
+            kernel_size=5,
             padding="same",
-            activation=tf.nn.relu)
-        pool1 = tf.layers.max_pooling2d(inputs=conv1, pool_size=[2, 2], strides=2)
+            kernel_regularizer=tf.contrib.layers.l2_regularizer(regularization_scale),
+            activation=misc.prelu)
+        pool1 = tf.layers.max_pooling2d(inputs=conv1, pool_size=2, strides=2)
 
         # Convolutional Layer #2 and Pooling Layer #2
         conv2 = tf.layers.conv2d(
             inputs=pool1,
             filters=32,
-            kernel_size=[5, 5],
-            strides=1,
+            kernel_size=5,
             padding="same",
-            activation=tf.nn.relu)
-        pool2 = tf.layers.max_pooling2d(inputs=conv2, pool_size=[2, 2], strides=2)
+            kernel_regularizer=tf.contrib.layers.l2_regularizer(regularization_scale),
+            activation=misc.prelu)
+        pool2 = tf.layers.max_pooling2d(inputs=conv2, pool_size=2, strides=2)
 
         # Convolutional Layer #3 and Pooling Layer #3
         conv3 = tf.layers.conv2d(
             inputs=pool2,
             filters=32,
-            kernel_size=[5, 5],
+            kernel_size=5,
             padding="same",
-            activation=tf.nn.relu)
-        pool3 = tf.layers.max_pooling2d(inputs=conv3, pool_size=[2, 2], strides=1, padding="same")
+            activation=misc.prelu)
+        pool3 = tf.layers.max_pooling2d(inputs=conv3, pool_size=2, strides=1, padding="same")
 
         # Convolutional Layer #4 and Pooling Layer #4
         conv4 = tf.layers.conv2d(
             inputs=pool3,
             filters=32,
-            kernel_size=[5, 5],
+            kernel_size=5,
             padding="same",
-            activation=tf.nn.relu)
-        pool4 = tf.layers.max_pooling2d(inputs=conv4, pool_size=[2, 2], strides=1, padding="same")
+            kernel_regularizer=tf.contrib.layers.l2_regularizer(regularization_scale),
+            activation=misc.prelu)
+        pool4 = tf.layers.max_pooling2d(inputs=conv4, pool_size=2, strides=1, padding="same")
 
         # Convolutional Layer #5 and Pooling Layer #5
         conv5 = tf.layers.conv2d(
             inputs=pool4,
             filters=32,
-            kernel_size=[17, 17],
+            kernel_size=17,
             padding="same",
-            activation=tf.nn.relu)
-        pool5 = tf.layers.max_pooling2d(inputs=conv5, pool_size=[2, 2], strides=1, padding="same")
+            kernel_regularizer=tf.contrib.layers.l2_regularizer(regularization_scale),
+            activation=misc.prelu)
+        pool5 = tf.layers.max_pooling2d(inputs=conv5, pool_size=2, strides=1, padding="same")
 
         small_conv1 = tf.layers.conv2d(
             inputs=pool5,
             filters=64,
-            kernel_size=[1, 1],
+            kernel_size=1,
             padding="same",
-            activation=tf.nn.relu)
+            kernel_regularizer=tf.contrib.layers.l2_regularizer(regularization_scale),
+            activation=misc.prelu)
+
+        dropout1 = tf.layers.dropout(
+            inputs=small_conv1,
+            rate=0.1
+        )
 
         small_conv2 = tf.layers.conv2d(
-            inputs=small_conv1,
+            inputs=dropout1,
             filters=64,
-            kernel_size=[1, 1],
+            kernel_size=1,
             padding="same",
-            activation=tf.nn.relu)
+            kernel_regularizer=tf.contrib.layers.l2_regularizer(regularization_scale),
+            activation=misc.prelu)
 
-        # deconv_size = 2**4
-        deconv = tf.layers.conv2d_transpose(
+        dropout2 = tf.layers.dropout(
             inputs=small_conv2,
+            rate=0.1
+        )
+
+        deconv = tf.layers.conv2d_transpose(
+            inputs=dropout2,
             filters=1,
-            kernel_size=[16, 16],
+            kernel_size=16,
             strides=4,
             padding="same",
+            kernel_regularizer=tf.contrib.layers.l2_regularizer(regularization_scale),
             activation=None)
 
         # print(input_layer.shape)
@@ -262,7 +281,8 @@ class Classifier(object):
     def train(self, images, labels, epochs=1, batch_size=1, rate=0.0001, epsilon=1e-8, weights=None):
         print("Training")
         self.reset()
-        batch_count = int(len(images) / batch_size)
+        # batch_count = ceil(len(images) / batch_size)
+        indices = list(range(len(images)))
 
         loss = self.calculate_loss(self.logits, self.target_labels, weights)
         # loss = self.loss
@@ -274,20 +294,25 @@ class Classifier(object):
             print("===============")
             print("EPOCH", epoch)
             print("===============")
-            for i in range(batch_count):
+
+            random.shuffle(indices)
+            batches = misc.chunks(indices, batch_size)
+            i = 0
+
+            for frames in batches:
+                i += 1
                 print("batch", i)
-                frames = range(i * batch_size, (i + 1) * batch_size)
+                # frames = indices[i * batch_size : (i + 1) * batch_size]
                 # _, losses = self.session.run([train_op, tf.get_collection('losses')],
-                # print(train_op is None, self.summary is None)
                 summary, _ = self.session.run([self.summary, train_op],
                                               {self.images: images[frames], self.target_labels: labels[frames]})
                 writer.add_summary(summary, i)
-            if len(images) % batch_size != 0:
-                print("Batch", batch_count)
-                frames = range(batch_count * batch_size, len(images))
-                summary, _ = self.session.run([self.summary, train_op],
-                                              {self.images: images[frames], self.target_labels: labels[frames]})
-                writer.add_summary(summary, batch_count)
+            # if len(images) % batch_size != 0:
+            #     print("Batch", batch_count)
+            #     frames = range(batch_count * batch_size, len(images))
+            #     summary, _ = self.session.run([self.summary, train_op],
+            #                                   {self.images: images[frames], self.target_labels: labels[frames]})
+            #     writer.add_summary(summary, batch_count)
         writer.close()
         return self.session.run(tf.get_collection('losses'))
 
@@ -314,6 +339,17 @@ def side_concat(img, lab):
     b = (lab * 255).repeat(3).reshape(480, 640, 3).astype(np.uint8)
     return np.concatenate((a, b), axis=1)
 
+def overlay(img, lab, truth):
+    img = np.copy(img)
+    img[truth, 2] = 255
+    img[truth, :2] //= 2
+    img[lab, 0] = 255
+    img[lab, 1:] //= 2
+    return img
+
 def imshow(img):
     plt.imshow(img)
     plt.show()
+
+def labshow(labels, i, images=TEST_IMG, truth=TEST_LAB):
+    imshow(overlay(images[i], labels[i], truth[i]))

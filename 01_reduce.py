@@ -1,11 +1,11 @@
 import numpy as np
 
-FILES = "hands/hands1-3650"
-frames = range(100)
+FILES = "data/hands2-3650"
+frames = range(500)
 
 
 images = np.load(FILES + "-images.npy")
 labels = np.load(FILES + "-labels.npy")
 
-np.save(FILES + "-images-reduced.npy", images[frames])
-np.save(FILES + "-labels-reduced.npy", labels[frames])
+np.save(FILES + "-images-500.npy", images[frames])
+np.save(FILES + "-labels-500.npy", labels[frames])
