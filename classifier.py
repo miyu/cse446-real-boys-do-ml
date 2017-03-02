@@ -21,18 +21,11 @@ TEST_IMG = IMG[400:]
 TEST_LAB = LAB[400:]
 
 
-i = 0
-while True:
-    i += 1
-    summary_path = "train/run{0}/".format(i)
-    if not os.path.exists(summary_path):
-        break
-
 class Classifier(object):
     def __init__(self, width=640, height=480, depth=3):
         self.config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
         self.graph = tf.Graph()
-        self.session = tf.Session(graph=self.graph, config=self.config)
+        self.reset()
 
         self.height = height
         self.width = width
@@ -44,13 +37,20 @@ class Classifier(object):
                 self.target_labels = tf.placeholder(tf.bool, [None, height, width], "target_labels")
 
                 self.pred_labels, self.logits = self.build_model(self.images)
-                self.loss = self.calculate_loss(self.logits, self.target_labels, [1, 1])
+                self.loss = self.calculate_loss(self.logits, self.target_labels)
 
             # with self.graph.device("/cpu:0"):
                 self.summary = tf.summary.merge_all()
 
     def reset(self):
         self.session = tf.Session(graph=self.graph, config=self.config)
+        i = 0
+        while True:
+            i += 1
+            summary_path = "train/run{0}/".format(i)
+            if not os.path.exists(summary_path):
+                break
+        self.summary_path = summary_path
 
     def build_model(self, images):
         """Model function for CNN."""
@@ -211,7 +211,7 @@ class Classifier(object):
         # return model_fn_lib.ModelFnOps(
         #     mode=mode, predictions=predictions, loss=loss, train_op=train_op)
 
-    def calculate_loss(self, logits, labels, weights=None):
+    def calculate_loss(self, logits, labels, pos_weight=1):
         """Calculate the loss from the logits and the labels.
         Args:
           logits: tensor, float - [batch_size, width, height, num_classes].
@@ -229,37 +229,37 @@ class Classifier(object):
                 with tf.name_scope('loss'):
                     # cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=tf.to_int32(labels))
                     
-                    cross_entropy = tf.nn.weighted_cross_entropy_with_logits(logits=logits, targets=tf.to_float(labels), pos_weight=10)
+                    cross_entropy = tf.nn.weighted_cross_entropy_with_logits(logits=logits, targets=tf.to_float(labels), pos_weight=pos_weight)
                     cross_entropy_mean = tf.reduce_mean(cross_entropy, name='x_entropy_mean')
                     tf.summary.scalar('x_entropy_mean', cross_entropy_mean)
                     return cross_entropy_mean
 
-                    logits = tf.reshape(logits, (-1, 2))
-                    epsilon = tf.constant(value=1e-4)
+                #     logits = tf.reshape(logits, (-1, 2))
+                #     epsilon = tf.constant(value=1e-4)
 
-                    inverse = tf.equal(labels, tf.zeros_like(labels, dtype=tf.bool))
-                    # with self.graph.device("/cpu:0"):
-                    labels = tf.stack([labels, inverse], axis=-1)
-                    labels = tf.to_float(labels)
-                    labels = tf.reshape(labels, (-1, 2))
+                #     inverse = tf.equal(labels, tf.zeros_like(labels, dtype=tf.bool))
+                #     # with self.graph.device("/cpu:0"):
+                #     labels = tf.stack([labels, inverse], axis=-1)
+                #     labels = tf.to_float(labels)
+                #     labels = tf.reshape(labels, (-1, 2))
 
-                    softmax = tf.nn.softmax(logits) + epsilon
+                #     softmax = tf.nn.softmax(logits) + epsilon
 
-                    if weights is not None:
-                        print(weights)
-                        cross_entropy = -tf.reduce_sum(tf.multiply(labels * tf.log(softmax),
-                                                                   weights), reduction_indices=[1])
-                    else:
-                        cross_entropy = -tf.reduce_sum(
-                            labels * tf.log(softmax), reduction_indices=[1])
+                #     if weights is not None:
+                #         print(weights)
+                #         cross_entropy = -tf.reduce_sum(tf.multiply(labels * tf.log(softmax),
+                #                                                    weights), reduction_indices=[1])
+                #     else:
+                #         cross_entropy = -tf.reduce_sum(
+                #             labels * tf.log(softmax), reduction_indices=[1])
 
-                    cross_entropy_mean = tf.reduce_mean(cross_entropy, name='x_entropy_mean')
-                    tf.add_to_collection('losses', cross_entropy_mean)
-                    # with self.graph.device("/cpu:0"):
-                    tf.summary.scalar('x_entropy_mean', cross_entropy_mean)
-                    return cross_entropy_mean
-                    # return tf.add_n(tf.get_collection('losses'), name='total_loss')
-                # return loss
+                #     cross_entropy_mean = tf.reduce_mean(cross_entropy, name='x_entropy_mean')
+                #     tf.add_to_collection('losses', cross_entropy_mean)
+                #     # with self.graph.device("/cpu:0"):
+                #     tf.summary.scalar('x_entropy_mean', cross_entropy_mean)
+                #     return cross_entropy_mean
+                #     # return tf.add_n(tf.get_collection('losses'), name='total_loss')
+                # # return loss
     def asdf(self, labels):
         with self.graph.as_default():
             with self.graph.device("/gpu:0"):
@@ -278,17 +278,17 @@ class Classifier(object):
                 self.session.run(tf.global_variables_initializer())
                 return op
 
-    def train(self, images, labels, epochs=1, batch_size=1, rate=0.0001, epsilon=1e-8, weights=None):
+    def train(self, images, labels, epochs=1, batch_size=1, rate=0.0001, epsilon=1e-8, pos_weight=10):
         print("Training")
         self.reset()
         # batch_count = ceil(len(images) / batch_size)
         indices = list(range(len(images)))
 
-        loss = self.calculate_loss(self.logits, self.target_labels, weights)
+        loss = self.calculate_loss(self.logits, self.target_labels, pos_weight)
         # loss = self.loss
         train_op = self.make_train_op(loss, rate, epsilon)
 
-        writer = tf.summary.FileWriter(summary_path, self.graph)
+        writer = tf.summary.FileWriter(self.summary_path, self.graph)
 
         for epoch in range(epochs):
             print("===============")
