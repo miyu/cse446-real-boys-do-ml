@@ -1,5 +1,6 @@
 import os
 import random
+import glob
 
 import numpy as np
 import tensorflow as tf
@@ -42,13 +43,15 @@ class Classifier(object):
             # with self.graph.device("/cpu:0"):
                 self.summary = tf.summary.merge_all()
 
+                self.saver = tf.train.Saver()
+
     def reset(self):
         self.session = tf.Session(graph=self.graph, config=self.config)
         i = 0
         while True:
             i += 1
-            summary_path = "train/run{0}/".format(i)
-            if not os.path.exists(summary_path):
+            summary_path = "train/run{0}".format(i)
+            if not os.path.exists(summary_path) and not glob.glob(summary_path + "-*"):
                 break
         self.summary_path = summary_path
 
@@ -146,6 +149,14 @@ class Classifier(object):
             kernel_regularizer=tf.contrib.layers.l2_regularizer(regularization_scale),
             activation=None)
 
+        tf.contrib.layers.summarize_activations()
+        # tf.contrib.layers.summarize_variables()
+        # tf.contrib.layers.summarize_weights()
+        # tf.contrib.layers.summarize_biases()
+        tf.contrib.layers.summarize_collection(tf.GraphKeys.GLOBAL_VARIABLES)
+        tf.contrib.layers.summarize_collection(tf.GraphKeys.WEIGHTS)
+        tf.contrib.layers.summarize_collection(tf.GraphKeys.BIASES)
+
         # print(input_layer.shape)
         # print(1)
         # print(conv1.shape)
@@ -228,47 +239,11 @@ class Classifier(object):
             with self.graph.device("/gpu:0"):
                 with tf.name_scope('loss'):
                     # cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=tf.to_int32(labels))
-                    
+
                     cross_entropy = tf.nn.weighted_cross_entropy_with_logits(logits=logits, targets=tf.to_float(labels), pos_weight=pos_weight)
                     cross_entropy_mean = tf.reduce_mean(cross_entropy, name='x_entropy_mean')
                     tf.summary.scalar('x_entropy_mean', cross_entropy_mean)
                     return cross_entropy_mean
-
-                #     logits = tf.reshape(logits, (-1, 2))
-                #     epsilon = tf.constant(value=1e-4)
-
-                #     inverse = tf.equal(labels, tf.zeros_like(labels, dtype=tf.bool))
-                #     # with self.graph.device("/cpu:0"):
-                #     labels = tf.stack([labels, inverse], axis=-1)
-                #     labels = tf.to_float(labels)
-                #     labels = tf.reshape(labels, (-1, 2))
-
-                #     softmax = tf.nn.softmax(logits) + epsilon
-
-                #     if weights is not None:
-                #         print(weights)
-                #         cross_entropy = -tf.reduce_sum(tf.multiply(labels * tf.log(softmax),
-                #                                                    weights), reduction_indices=[1])
-                #     else:
-                #         cross_entropy = -tf.reduce_sum(
-                #             labels * tf.log(softmax), reduction_indices=[1])
-
-                #     cross_entropy_mean = tf.reduce_mean(cross_entropy, name='x_entropy_mean')
-                #     tf.add_to_collection('losses', cross_entropy_mean)
-                #     # with self.graph.device("/cpu:0"):
-                #     tf.summary.scalar('x_entropy_mean', cross_entropy_mean)
-                #     return cross_entropy_mean
-                #     # return tf.add_n(tf.get_collection('losses'), name='total_loss')
-                # # return loss
-    def asdf(self, labels):
-        with self.graph.as_default():
-            with self.graph.device("/gpu:0"):
-                lbl = tf.Variable([False, False, False])
-                # tf.expand_dims(lbl, -1)
-                inverse = tf.equal(lbl, tf.zeros_like(lbl, dtype=tf.bool))
-                with self.graph.device("/cpu:0"):
-                    stacked = tf.stack([lbl, inverse], axis=-1)
-        return self.session.run(stacked, feed_dict={lbl: labels})
 
     def make_train_op(self, loss, rate, epsilon):
         with self.graph.as_default():
@@ -322,9 +297,23 @@ class Classifier(object):
         for i in range(len(images)):
             pred[i] = self.session.run(self.pred_labels,
                                 {self.images: images[i:i+1], self.target_labels: labels[i:i+1]})[0]
-        print("Avg Errors:", (pred != labels).sum() / len(labels))
-        print("Pct Errors:", (pred != labels).sum() / labels.size)
+        print("Avg errors:", (pred != labels).sum() / len(labels))
+        print("Pct errors:", (pred != labels).sum() / labels.size)
+        precision = (pred * labels).sum() / pred.sum()
+        recall = (pred * labels).sum() / labels.sum()
+        f1 = 2 * precision * recall / (precision + recall)
+        print("Precision:", precision)
+        print("Recall:", recall)
+        print("F1 score:", f1)
         return pred
+
+    def save(self, pathname=None):
+        if pathname is None:
+            pathname = self.summary_path
+        self.saver.save(self.session, pathname+"/model.ckpt")
+
+    def restore(self, pathname):
+        self.saver.restore(self.session, pathname+"/model.ckpt")
 
 m = Classifier()
 
