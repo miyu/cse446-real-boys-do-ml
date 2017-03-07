@@ -1,4 +1,5 @@
 import os
+import math
 import random
 import glob
 
@@ -16,10 +17,12 @@ LABELS_FULL = FILE_PREFIX + "-labels.npy"
 
 IMG = np.load(IMAGES)
 LAB = np.load(LABELS)
-TRAIN_IMG = IMG[:400]
-TRAIN_LAB = LAB[:400]
-TEST_IMG = IMG[400:]
-TEST_LAB = LAB[400:]
+TRAIN = range(400)
+TEST = range(400, len(IMG))
+# TRAIN_IMG = IMG[:400]
+# TRAIN_LAB = LAB[:400]
+# TEST_IMG = IMG[400:]
+# TEST_LAB = LAB[400:]
 
 
 class Classifier(object):
@@ -54,6 +57,7 @@ class Classifier(object):
             if not os.path.exists(summary_path) and not glob.glob(summary_path + "-*"):
                 break
         self.summary_path = summary_path
+        self.run_num = i
 
     def build_model(self, images):
         """Model function for CNN."""
@@ -253,11 +257,14 @@ class Classifier(object):
                 self.session.run(tf.global_variables_initializer())
                 return op
 
-    def train(self, images, labels, epochs=1, batch_size=1, rate=0.0001, epsilon=1e-8, pos_weight=10):
+    def train(self, images, labels, indices=None, epochs=1, batch_size=4, rate=0.0001, epsilon=1e-8, pos_weight=10):
         print("Training")
         self.reset()
         # batch_count = ceil(len(images) / batch_size)
-        indices = list(range(len(images)))
+        if indices is None:
+            indices = list(range(len(images)))
+        else:
+            indices = list(indices)
 
         loss = self.calculate_loss(self.logits, self.target_labels, pos_weight)
         # loss = self.loss
@@ -265,9 +272,11 @@ class Classifier(object):
 
         writer = tf.summary.FileWriter(self.summary_path, self.graph)
 
+        it = 0
+
         for epoch in range(epochs):
             print("===============")
-            print("EPOCH", epoch)
+            print("EPOCH", epoch+1)
             print("===============")
 
             random.shuffle(indices)
@@ -275,13 +284,15 @@ class Classifier(object):
             i = 0
 
             for frames in batches:
+                it += 1
                 i += 1
-                print("batch", i)
+                if i % 10 == 0:
+                    print("batch", i)
                 # frames = indices[i * batch_size : (i + 1) * batch_size]
                 # _, losses = self.session.run([train_op, tf.get_collection('losses')],
                 summary, _ = self.session.run([self.summary, train_op],
                                               {self.images: images[frames], self.target_labels: labels[frames]})
-                writer.add_summary(summary, i)
+                writer.add_summary(summary, it)
             # if len(images) % batch_size != 0:
             #     print("Batch", batch_count)
             #     frames = range(batch_count * batch_size, len(images))
@@ -289,18 +300,23 @@ class Classifier(object):
             #                                   {self.images: images[frames], self.target_labels: labels[frames]})
             #     writer.add_summary(summary, batch_count)
         writer.close()
-        return self.session.run(tf.get_collection('losses'))
 
-    def test(self, images, labels):
+    def test(self, images, labels, indices=None):
+        if indices is None:
+            indices = range(len(images))
+            lab = labels
+        else:
+            lab = labels[indices]
+        pred = np.empty_like(lab)
         print("Testing")
-        pred = np.empty_like(labels)
-        for i in range(len(images)):
+        for index, i in zip(indices, range(len(indices))):
             pred[i] = self.session.run(self.pred_labels,
-                                {self.images: images[i:i+1], self.target_labels: labels[i:i+1]})[0]
-        print("Avg errors:", (pred != labels).sum() / len(labels))
-        print("Pct errors:", (pred != labels).sum() / labels.size)
-        precision = (pred * labels).sum() / pred.sum()
-        recall = (pred * labels).sum() / labels.sum()
+                                       {self.images: [images[index]],
+                                        self.target_labels: [labels[index]]})[0]
+        print("Avg errors:", (pred != lab).sum() / len(lab))
+        print("Pct errors:", (pred != lab).sum() / lab.size)
+        precision = (pred * lab).sum() / pred.sum()
+        recall = (pred * lab).sum() / lab.sum()
         f1 = 2 * precision * recall / (precision + recall)
         print("Precision:", precision)
         print("Recall:", recall)
@@ -312,16 +328,42 @@ class Classifier(object):
             pathname = self.summary_path
         self.saver.save(self.session, pathname+"/model.ckpt")
 
-    def restore(self, pathname):
+    def restore(self, run_num=None, pathname=None):
+        if pathname is None:
+            if run_num is None:
+                run_num = self.run_num - 1
+            pathname = "train/run{0}".format(run_num)
+            if not os.path.exists(pathname):
+                pathname = glob.glob(pathname + "-*")[0]
         self.saver.restore(self.session, pathname+"/model.ckpt")
 
 m = Classifier()
 
-def train(images=TRAIN_IMG, labels=TRAIN_LAB, *args, **kwargs):
-    return m.train(images, labels, *args, **kwargs)
+def train(images=IMG, labels=LAB, indices=TRAIN, *args, **kwargs):
+    return m.train(images, labels, indices, *args, **kwargs)
 
-def test(images=TEST_IMG, labels=TEST_LAB, *args, **kwargs):
-    return m.test(images, labels, *args, **kwargs)
+def test(images=IMG, labels=LAB, indices=TEST):
+    return m.test(images, labels, indices)
+
+def run(img=IMG, lab=LAB, train_indices=TRAIN, test_indices=TEST, *args, **kwargs):
+    train(img, lab, train_indices, *args, **kwargs)
+    return test(img, lab, test_indices)
+
+def split_and_run(images, labels, test_chunks, num_chunks=9, *args, **kwargs):
+    indices = range(len(images))
+    chunk_size = math.ceil(len(images) / num_chunks)
+    chunks = list(misc.chunks(indices, chunk_size))
+    test_indices = np.r_[tuple(chunks[test_chunks])]
+    train_indices = np.r_[tuple(np.delete(chunks, test_chunks))]
+
+    return run(images, labels, train_indices, test_indices, *args, **kwargs), test_indices
+
+    # train(images, labels, indices=train_indices, *args, **kwargs)
+    # return test(images, labels, indices=test_indices)
+
+def randsplit_and_run(images, labels, num_chunks=9, num_test_chunks=1, *args, **kwargs):
+    test_chunks = np.random.choice(range(num_chunks), num_test_chunks, replace=False)
+    return split_and_run(images, labels, test_chunks, num_chunks *args, **kwargs)
 
 def side_concat(img, lab):
     a = img
@@ -340,5 +382,7 @@ def imshow(img):
     plt.imshow(img)
     plt.show()
 
-def labshow(labels, i, images=TEST_IMG, truth=TEST_LAB):
-    imshow(overlay(images[i], labels[i], truth[i]))
+def labshow(labels, i, images=IMG, truth=LAB, test_indices=TEST):
+    if test_indices is None:
+        test_indices = range(len(images))
+    imshow(overlay(images[test_indices[i]], labels[i], truth[test_indices[i]]))
