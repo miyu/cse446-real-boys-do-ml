@@ -8,12 +8,16 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 import misc
 
-FILE_PREFIX = "data/hands1-3650"
-IMAGES = FILE_PREFIX + "-images-500.npy"
-LABELS = FILE_PREFIX + "-labels-500.npy"
+DATA1 = "data/hands1-3650"
+DATA2 = "data/hands2-3650"
+IMAGES = DATA1 + "-images-500.npy"
+LABELS = DATA1 + "-labels-500.npy"
 
-IMAGES_FULL = FILE_PREFIX + "-images.npy"
-LABELS_FULL = FILE_PREFIX + "-labels.npy"
+IMAGES_FULL = DATA1 + "-images.npy"
+LABELS_FULL = DATA1 + "-labels.npy"
+
+IMAGES2_FULL = DATA2 + "-images.npy"
+LABELS2_FULL = DATA2 + "-labels.npy"
 
 IMG = np.load(IMAGES)
 LAB = np.load(LABELS)
@@ -27,7 +31,7 @@ TEST = range(400, len(IMG))
 
 class Classifier(object):
     def __init__(self, width=640, height=480, depth=3):
-        self.config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
+        self.config = tf.ConfigProto(allow_soft_placement=True)  # log_device_placement=True
         self.graph = tf.Graph()
         self.reset()
 
@@ -43,7 +47,7 @@ class Classifier(object):
                 self.pred_labels, self.logits = self.build_model(self.images)
                 self.loss = self.calculate_loss(self.logits, self.target_labels)
 
-            # with self.graph.device("/cpu:0"):
+            # with self.graph.devicpe("/cpu:0"):
                 self.summary = tf.summary.merge_all()
 
                 self.saver = tf.train.Saver()
@@ -71,54 +75,60 @@ class Classifier(object):
 
         # Convolutional Layer and pooling layer #1
         conv1 = tf.layers.conv2d(
+            name="conv1",
             inputs=input_layer,
             filters=32,
             kernel_size=5,
             padding="same",
             kernel_regularizer=tf.contrib.layers.l2_regularizer(regularization_scale),
             activation=misc.prelu)
-        pool1 = tf.layers.max_pooling2d(inputs=conv1, pool_size=2, strides=2)
+        pool1 = tf.layers.max_pooling2d(name="pool1", inputs=conv1, pool_size=2, strides=2)
 
         # Convolutional Layer #2 and Pooling Layer #2
         conv2 = tf.layers.conv2d(
+            name="conv2",
             inputs=pool1,
             filters=32,
             kernel_size=5,
             padding="same",
             kernel_regularizer=tf.contrib.layers.l2_regularizer(regularization_scale),
             activation=misc.prelu)
-        pool2 = tf.layers.max_pooling2d(inputs=conv2, pool_size=2, strides=2)
+        pool2 = tf.layers.max_pooling2d(name="pool2", inputs=conv2, pool_size=2, strides=2)
 
         # Convolutional Layer #3 and Pooling Layer #3
         conv3 = tf.layers.conv2d(
+            name="conv3",
             inputs=pool2,
             filters=32,
             kernel_size=5,
             padding="same",
             activation=misc.prelu)
-        pool3 = tf.layers.max_pooling2d(inputs=conv3, pool_size=2, strides=1, padding="same")
+        pool3 = tf.layers.max_pooling2d(name="pool3", inputs=conv3, pool_size=2, strides=1, padding="same")
 
         # Convolutional Layer #4 and Pooling Layer #4
         conv4 = tf.layers.conv2d(
+            name="conv4",
             inputs=pool3,
             filters=32,
             kernel_size=5,
             padding="same",
             kernel_regularizer=tf.contrib.layers.l2_regularizer(regularization_scale),
             activation=misc.prelu)
-        pool4 = tf.layers.max_pooling2d(inputs=conv4, pool_size=2, strides=1, padding="same")
+        pool4 = tf.layers.max_pooling2d(name="pool4", inputs=conv4, pool_size=2, strides=1, padding="same")
 
         # Convolutional Layer #5 and Pooling Layer #5
         conv5 = tf.layers.conv2d(
+            name="conv5",
             inputs=pool4,
             filters=32,
             kernel_size=17,
             padding="same",
             kernel_regularizer=tf.contrib.layers.l2_regularizer(regularization_scale),
             activation=misc.prelu)
-        pool5 = tf.layers.max_pooling2d(inputs=conv5, pool_size=2, strides=1, padding="same")
+        pool5 = tf.layers.max_pooling2d(name="pool5", inputs=conv5, pool_size=2, strides=1, padding="same")
 
         small_conv1 = tf.layers.conv2d(
+            name="small_conv1",
             inputs=pool5,
             filters=64,
             kernel_size=1,
@@ -127,11 +137,13 @@ class Classifier(object):
             activation=misc.prelu)
 
         dropout1 = tf.layers.dropout(
+            name="dropout1",
             inputs=small_conv1,
             rate=0.1
         )
 
         small_conv2 = tf.layers.conv2d(
+            name="small_conv2",
             inputs=dropout1,
             filters=64,
             kernel_size=1,
@@ -140,11 +152,13 @@ class Classifier(object):
             activation=misc.prelu)
 
         dropout2 = tf.layers.dropout(
+            name="dropout2",
             inputs=small_conv2,
             rate=0.1
         )
 
         deconv = tf.layers.conv2d_transpose(
+            name="deconv",
             inputs=dropout2,
             filters=1,
             kernel_size=16,
@@ -257,7 +271,7 @@ class Classifier(object):
                 self.session.run(tf.global_variables_initializer())
                 return op
 
-    def train(self, images, labels, indices=None, epochs=1, batch_size=4, rate=0.0001, epsilon=1e-8, pos_weight=10):
+    def train(self, images, labels, indices=None, epochs=1, batch_size=8, rate=0.0001, epsilon=1e-8, pos_weight=10):
         print("Training")
         self.reset()
         # batch_count = ceil(len(images) / batch_size)
@@ -349,21 +363,26 @@ def run(img=IMG, lab=LAB, train_indices=TRAIN, test_indices=TEST, *args, **kwarg
     train(img, lab, train_indices, *args, **kwargs)
     return test(img, lab, test_indices)
 
-def split_and_run(images, labels, test_chunks, num_chunks=9, *args, **kwargs):
-    indices = range(len(images))
-    chunk_size = math.ceil(len(images) / num_chunks)
-    chunks = list(misc.chunks(indices, chunk_size))
-    test_indices = np.r_[tuple(chunks[test_chunks])]
-    train_indices = np.r_[tuple(np.delete(chunks, test_chunks))]
+def split_and_run(images, labels, test_chunks, num_chunks=9, ranges=None, *args, **kwargs):
+    if ranges is None:
+        ranges = [range(len(images))]
+    test_indices = []
+    train_indices = []
+    print(ranges)
+    for indices in ranges:
+        chunk_size = math.ceil(len(indices) / num_chunks)
+        chunks = np.array(list(misc.chunks(indices, chunk_size)))
+        test_indices += chunks[test_chunks].tolist()
+        train_indices += np.delete(chunks, test_chunks, axis=0).tolist()
+
+    test_indices = np.concatenate(test_indices)
+    train_indices = np.concatenate(train_indices)
 
     return run(images, labels, train_indices, test_indices, *args, **kwargs), test_indices
 
-    # train(images, labels, indices=train_indices, *args, **kwargs)
-    # return test(images, labels, indices=test_indices)
-
-def randsplit_and_run(images, labels, num_chunks=9, num_test_chunks=1, *args, **kwargs):
+def randsplit_and_run(images, labels, num_chunks=9, num_test_chunks=1, ranges=None, *args, **kwargs):
     test_chunks = np.random.choice(range(num_chunks), num_test_chunks, replace=False)
-    return split_and_run(images, labels, test_chunks, num_chunks *args, **kwargs)
+    return split_and_run(images, labels, test_chunks, num_chunks, ranges, *args, **kwargs)
 
 def side_concat(img, lab):
     a = img
@@ -386,3 +405,24 @@ def labshow(labels, i, images=IMG, truth=LAB, test_indices=TEST):
     if test_indices is None:
         test_indices = range(len(images))
     imshow(overlay(images[test_indices[i]], labels[i], truth[test_indices[i]]))
+
+def get_all_data():
+    # throw out garbage labels at the end
+    images1 = np.load(IMAGES_FULL)[:-130]
+    labels1 = np.load(LABELS_FULL)[:-130]
+    images2 = np.load(IMAGES2_FULL)
+    labels2 = np.load(LABELS2_FULL)
+
+    images = np.concatenate([images1, images2])
+    labels = np.concatenate([labels1, labels2])
+
+    count1 = len(images1)
+    split1 = count1 // 10 * 9
+    count2 = len(images2)
+    split2 = count2 // 10 * 9
+
+    train_ranges = [range(split1), range(count1, count1+split2)]
+    test_ranges = [range(split1, count1), range(count1+split2, count1+count2)]
+
+    return images, labels, train_ranges, test_ranges
+
