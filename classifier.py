@@ -8,6 +8,9 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 import misc
 
+from models.slim.nets import inception_v2
+from tensorflow.contrib import slim
+
 DATA1 = "data/hands1-3650"
 DATA2 = "data/hands2-3650"
 IMAGES = DATA1 + "-images-500.npy"
@@ -18,6 +21,8 @@ LABELS_FULL = DATA1 + "-labels.npy"
 
 IMAGES2_FULL = DATA2 + "-images.npy"
 LABELS2_FULL = DATA2 + "-labels.npy"
+
+INCEPTION_CHECKPOINT = "./inception_v2.ckpt"
 
 IMG = np.load(IMAGES)
 LAB = np.load(LABELS)
@@ -30,7 +35,7 @@ TEST = range(400, len(IMG))
 
 
 class Classifier(object):
-    def __init__(self, width=640, height=480, depth=3):
+    def __init__(self, width=640, height=480, depth=3, inception=False):
         self.config = tf.ConfigProto(allow_soft_placement=True)  # log_device_placement=True
         self.graph = tf.Graph()
         self.reset()
@@ -38,19 +43,48 @@ class Classifier(object):
         self.height = height
         self.width = width
         self.depth = depth
+        self.inception = inception
 
         with self.graph.as_default():
             with self.graph.device("/gpu:0"):
                 self.images = tf.placeholder(tf.float32, [None, height, width, depth], "images")
                 self.target_labels = tf.placeholder(tf.bool, [None, height, width], "target_labels")
 
-                self.pred_labels, self.logits = self.build_model(self.images)
+                if inception:
+                    with slim.arg_scope(inception_v2.inception_v2_arg_scope()):
+                        net, end_points = inception_v2.inception_v2_base(self.images, final_endpoint='Mixed_3c')
+
+                    net = slim.avg_pool2d(net, [7, 7], stride=1, scope="MaxPool_0a_7x7")
+                    net = slim.dropout(net,
+                                       0.8, scope='Dropout_0b')
+                    net = slim.conv2d(net, 1, [1, 1], activation_fn=None,
+                                              normalizer_fn=None)  # , scope='Conv2d_0c_1x1'
+
+                    net = tf.pad(net, [[0, 0], [3, 3], [3, 3], [0, 0]])
+
+                    net = tf.layers.conv2d_transpose(
+                        name="deconv",
+                        inputs=net,
+                        filters=1,
+                        kernel_size=16,
+                        strides=8,
+                        padding="same",
+                        kernel_regularizer=tf.contrib.layers.l2_regularizer(1.),
+                        activation=None)
+
+                    self.logits = tf.squeeze(net, axis=3)
+
+                    self.pred_labels = tf.greater(self.logits, 0)
+                else:
+                    self.pred_labels, self.logits = self.build_model(self.images)
+                    self.saver = tf.train.Saver()
+
                 self.loss = self.calculate_loss(self.logits, self.target_labels)
 
-            # with self.graph.devicpe("/cpu:0"):
                 self.summary = tf.summary.merge_all()
 
                 self.saver = tf.train.Saver()
+
 
     def reset(self):
         self.session = tf.Session(graph=self.graph, config=self.config)
@@ -62,6 +96,7 @@ class Classifier(object):
                 break
         self.summary_path = summary_path
         self.run_num = i
+        self.it = 0
 
     def build_model(self, images):
         """Model function for CNN."""
@@ -263,30 +298,41 @@ class Classifier(object):
                     tf.summary.scalar('x_entropy_mean', cross_entropy_mean)
                     return cross_entropy_mean
 
-    def make_train_op(self, loss, rate, epsilon):
+    def make_train_op(self, loss, rate, epsilon, initialize=True):
         with self.graph.as_default():
             with self.graph.device("/gpu:0"):
+                if self.inception and initialize:
+                    vars = [var for var in tf.global_variables() if var.name.startswith("InceptionV2")]
+                    saver = tf.train.Saver(vars)
+
                 optimizer = tf.train.AdamOptimizer(learning_rate=rate, epsilon=epsilon)
                 op = optimizer.minimize(loss)
-                self.session.run(tf.global_variables_initializer())
+
+                if initialize:
+                    self.session.run(tf.global_variables_initializer())
+                    if self.inception:
+                        saver.restore(self.session, INCEPTION_CHECKPOINT)
+
                 return op
 
-    def train(self, images, labels, indices=None, epochs=1, batch_size=8, rate=0.0001, epsilon=1e-8, pos_weight=10):
-        print("Training")
-        self.reset()
-        # batch_count = ceil(len(images) / batch_size)
+    def train(self, images, labels, indices=None, epochs=1, batch_size=8, rate=0.0001, epsilon=1e-8, pos_weight=10, reset=True):
         if indices is None:
             indices = list(range(len(images)))
         else:
             indices = list(indices)
 
-        loss = self.calculate_loss(self.logits, self.target_labels, pos_weight)
-        # loss = self.loss
-        train_op = self.make_train_op(loss, rate, epsilon)
+        if reset:
+            self.reset()
+            loss = self.calculate_loss(self.logits, self.target_labels, pos_weight)
+            # self.loss = loss
+            train_op = self.make_train_op(loss, rate, epsilon, initialize=reset)
+            self.train_op = train_op
+        else:
+            train_op = self.train_op
 
         writer = tf.summary.FileWriter(self.summary_path, self.graph)
 
-        it = 0
+        print("Training")
 
         for epoch in range(epochs):
             print("===============")
@@ -298,7 +344,7 @@ class Classifier(object):
             i = 0
 
             for frames in batches:
-                it += 1
+                self.it += 1
                 i += 1
                 if i % 10 == 0:
                     print("batch", i)
@@ -306,13 +352,7 @@ class Classifier(object):
                 # _, losses = self.session.run([train_op, tf.get_collection('losses')],
                 summary, _ = self.session.run([self.summary, train_op],
                                               {self.images: images[frames], self.target_labels: labels[frames]})
-                writer.add_summary(summary, it)
-            # if len(images) % batch_size != 0:
-            #     print("Batch", batch_count)
-            #     frames = range(batch_count * batch_size, len(images))
-            #     summary, _ = self.session.run([self.summary, train_op],
-            #                                   {self.images: images[frames], self.target_labels: labels[frames]})
-            #     writer.add_summary(summary, batch_count)
+                writer.add_summary(summary, self.it)
         writer.close()
 
     def test(self, images, labels, indices=None):
@@ -320,6 +360,7 @@ class Classifier(object):
             indices = range(len(images))
             lab = labels
         else:
+            indices = np.r_[tuple(indices)]
             lab = labels[indices]
         pred = np.empty_like(lab)
         print("Testing")
@@ -327,14 +368,25 @@ class Classifier(object):
             pred[i] = self.session.run(self.pred_labels,
                                        {self.images: [images[index]],
                                         self.target_labels: [labels[index]]})[0]
-        print("Avg errors:", (pred != lab).sum() / len(lab))
-        print("Pct errors:", (pred != lab).sum() / lab.size)
-        precision = (pred * lab).sum() / pred.sum()
-        recall = (pred * lab).sum() / lab.sum()
+        errors = (pred != lab).sum()
+        print("Avg errors:", errors / len(lab))
+        print("Pct errors:", errors / lab.size)
+
+        intersection = (pred * lab).sum()
+        pred_sum = pred.sum()
+        exp_sum = lab.sum()
+        precision = intersection / pred_sum
+        recall = intersection.sum() / exp_sum
         f1 = 2 * precision * recall / (precision + recall)
         print("Precision:", precision)
         print("Recall:", recall)
         print("F1 score:", f1)
+
+        total = lab.size
+        print("Confusion matrix")
+        print("Predicted hands:", intersection, (pred_sum-intersection))
+        print("Predicted not hands", (exp_sum-intersection), (total - pred_sum - exp_sum + intersection))
+        print("Total:", total)
         return pred
 
     def save(self, pathname=None):
@@ -349,9 +401,12 @@ class Classifier(object):
             pathname = "train/run{0}".format(run_num)
             if not os.path.exists(pathname):
                 pathname = glob.glob(pathname + "-*")[0]
-        self.saver.restore(self.session, pathname+"/model.ckpt")
 
-m = Classifier()
+        with self.graph.as_default():
+            with self.graph.device("/gpu:0"):
+                self.saver.restore(self.session, pathname+"/model.ckpt")
+
+m = Classifier(inception=True)
 
 def train(images=IMG, labels=LAB, indices=TRAIN, *args, **kwargs):
     return m.train(images, labels, indices, *args, **kwargs)
@@ -363,12 +418,9 @@ def run(img=IMG, lab=LAB, train_indices=TRAIN, test_indices=TEST, *args, **kwarg
     train(img, lab, train_indices, *args, **kwargs)
     return test(img, lab, test_indices)
 
-def split_and_run(images, labels, test_chunks, num_chunks=9, ranges=None, *args, **kwargs):
-    if ranges is None:
-        ranges = [range(len(images))]
+def split(ranges, test_chunks, num_chunks):
     test_indices = []
     train_indices = []
-    print(ranges)
     for indices in ranges:
         chunk_size = math.ceil(len(indices) / num_chunks)
         chunks = np.array(list(misc.chunks(indices, chunk_size)))
@@ -377,6 +429,14 @@ def split_and_run(images, labels, test_chunks, num_chunks=9, ranges=None, *args,
 
     test_indices = np.concatenate(test_indices)
     train_indices = np.concatenate(train_indices)
+
+    return train_indices, test_indices
+
+def split_and_run(images, labels, test_chunks, num_chunks=9, ranges=None, *args, **kwargs):
+    if ranges is None:
+        ranges = [range(len(images))]
+
+    train_indices, test_indices = split(ranges, test_chunks, num_chunks)
 
     return run(images, labels, train_indices, test_indices, *args, **kwargs), test_indices
 
@@ -393,8 +453,11 @@ def overlay(img, lab, truth):
     img = np.copy(img)
     img[truth, 2] = 255
     img[truth, :2] //= 2
+
     img[lab, 0] = 255
-    img[lab, 1:] //= 2
+
+    intersection = truth*lab
+    img[lab - intersection, 1:] //= 2
     return img
 
 def imshow(img):
@@ -426,3 +489,8 @@ def get_all_data():
 
     return images, labels, train_ranges, test_ranges
 
+def split_run_save(images, labels, train, test, *args, **kwargs):
+    train, val = split(train, [5], 9)
+    pred = run(images, labels, train, test, *args, **kwargs)
+    m.save()
+    return pred
